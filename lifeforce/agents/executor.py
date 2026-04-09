@@ -6,6 +6,7 @@ from lifeforce.core.agent import Agent
 from lifeforce.core.budget import BudgetGuard
 from lifeforce.core.memory import MemorySystem
 from lifeforce.genome.chaos_edge import inject_randomness
+from lifeforce.skills.google_search import GoogleSearchSkill
 from lifeforce.skills.llm_call import LLMCallSkill
 from lifeforce.skills.memory_write import MemoryWriteSkill
 from lifeforce.skills.shell_exec import ShellExecSkill
@@ -32,6 +33,7 @@ class ExecutorAgent(Agent):
             "shell_exec": ShellExecSkill(config),
             "llm_call": LLMCallSkill(config),
             "memory_write": MemoryWriteSkill(memory),
+            "google_search": GoogleSearchSkill(),
         }
         self.logger.info("Executor initialized with %s skills", len(self.skills))
 
@@ -92,6 +94,8 @@ class ExecutorAgent(Agent):
                 selected_candidates.append("memory_write")
             if any(token in text for token in ["llm", "chat", "reply", "模型", "对话"]):
                 selected_candidates.append("llm_call")
+            if any(token in text for token in ["google", "search", "新闻", "论文", "检索", "搜索"]):
+                selected_candidates.append("google_search")
             if not selected_candidates:
                 selected_candidates = list(self.skills.keys())
         ordered = inject_randomness(selected_candidates, top_k=3)

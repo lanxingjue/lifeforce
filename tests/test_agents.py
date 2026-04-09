@@ -64,3 +64,10 @@ def test_executor_select_skills_with_chaos_edge(memory: MemorySystem, budget_gua
     assert selected
     assert all(item in executor.skills for item in selected)
 
+
+def test_executor_google_search_skill(memory: MemorySystem, budget_guard: BudgetGuard) -> None:
+    executor = ExecutorAgent(memory, budget_guard, MockConfig())
+    result = executor.process({"skill": "google_search", "params": {"query": "digital life", "num_results": 2}})
+    assert result["status"] == "success"
+    assert isinstance(result["result"], list)
+
