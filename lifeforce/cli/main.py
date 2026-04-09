@@ -1,5 +1,6 @@
 """Lifeforce CLI 入口。"""
 
+import json
 from pathlib import Path
 from typing import Optional
 import time
@@ -15,11 +16,15 @@ from lifeforce.agents.thinker import ThinkerAgent
 from lifeforce.core.budget import BudgetGuard
 from lifeforce.core.config import load_config
 from lifeforce.core.memory import MemorySystem
+from lifeforce.growth import GrowthEngine
 from lifeforce.genome import load_constitution
 from lifeforce.heartbeat import CoreHeartbeat, HeartbeatScheduler, Vitals
+from lifeforce.memory.self_model import SelfModelStore
 from lifeforce.utils.logger import setup_logger
 
 app = typer.Typer(name="lifeforce", help="Lifeforce - A digital life form", add_completion=False)
+skill_app = typer.Typer(name="skill", help="Skill lifecycle commands", add_completion=False)
+app.add_typer(skill_app, name="skill")
 console = Console()
 logger = setup_logger("lifeforce.cli")
 
@@ -245,11 +250,148 @@ def reflect(
         self_modeler = SelfModelerAgent(memory=memory, budget_guard=budget_guard, config=config)
         thinker = ThinkerAgent(memory=memory, budget_guard=budget_guard, config=config)
         base_description = self_modeler.reflect_on_self()
-        thought = thinker.think("反思今天的行为和决策", mode="meta" if deep else "normal")
+        if deep:
+            data_root = Path(str(getattr(config.memory, "data_dir", ".lifeforce")))
+            self_model = SelfModelStore(data_root / "self_model")
+            engine = GrowthEngine(data_root=data_root, memory=memory, thinker=thinker, self_model=self_model)
+            inputs = engine.collect_inputs()
+            reflection = engine.reflect_deep(inputs)
+            thought = reflection["text"]
+        else:
+            thought = thinker.think("反思今天的行为和决策", mode="normal")
         output = f"{base_description}\n\n[思考输出]\n{thought}"
         console.print(Panel.fit(output, title="🧠 Self-Reflection", border_style="cyan"))
     except Exception as exc:
         logger.error("Error in reflect: %s", exc)
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def grow(config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="配置文件路径")) -> None:
+    """执行一次完整成长循环。"""
+    try:
+        config = load_config(config_path)
+        memory_config = config.memory.model_dump()
+        memory_config["openai_base_url"] = config.llm.base_url
+        try:
+            memory_config["openai_api_key"] = config.llm.api_key
+        except Exception:
+            pass
+        memory = MemorySystem(config.memory.db_path, config=memory_config)
+        budget_guard = BudgetGuard(
+            hourly_limit=config.budget.hourly_limit,
+            daily_limit=config.budget.daily_limit,
+            monthly_limit=config.budget.monthly_limit,
+        )
+        thinker = ThinkerAgent(memory=memory, budget_guard=budget_guard, config=config)
+        self_model = SelfModelStore(Path(str(getattr(config.memory, "data_dir", ".lifeforce"))) / "self_model")
+        engine = GrowthEngine(
+            data_root=Path(str(getattr(config.memory, "data_dir", ".lifeforce"))),
+            memory=memory,
+            thinker=thinker,
+            self_model=self_model,
+        )
+        result = engine.run_growth_cycle()
+        console.print(Panel.fit(json.dumps(result, ensure_ascii=False, indent=2), title="🌱 Growth Cycle", border_style="green"))
+    except Exception as exc:
+        logger.error("Error in grow: %s", exc)
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def learn(
+    topic: str = typer.Argument(..., help="要学习的主题"),
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="配置文件路径"),
+) -> None:
+    """主动学习指定主题。"""
+    try:
+        config = load_config(config_path)
+        memory_config = config.memory.model_dump()
+        memory_config["openai_base_url"] = config.llm.base_url
+        try:
+            memory_config["openai_api_key"] = config.llm.api_key
+        except Exception:
+            pass
+        memory = MemorySystem(config.memory.db_path, config=memory_config)
+        budget_guard = BudgetGuard(
+            hourly_limit=config.budget.hourly_limit,
+            daily_limit=config.budget.daily_limit,
+            monthly_limit=config.budget.monthly_limit,
+        )
+        thinker = ThinkerAgent(memory=memory, budget_guard=budget_guard, config=config)
+        self_model = SelfModelStore(Path(str(getattr(config.memory, "data_dir", ".lifeforce"))) / "self_model")
+        engine = GrowthEngine(
+            data_root=Path(str(getattr(config.memory, "data_dir", ".lifeforce"))),
+            memory=memory,
+            thinker=thinker,
+            self_model=self_model,
+        )
+        result = engine.learning.learn_topic(topic)
+        console.print(Panel.fit(json.dumps(result, ensure_ascii=False, indent=2), title="📚 Learning", border_style="cyan"))
+    except Exception as exc:
+        logger.error("Error in learn: %s", exc)
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@skill_app.command("search")
+def skill_search(
+    capability: str = typer.Argument(..., help="能力缺口描述"),
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="配置文件路径"),
+) -> None:
+    """搜索相关技能。"""
+    try:
+        config = load_config(config_path)
+        memory = MemorySystem(config.memory.db_path, config=config.memory.model_dump())
+        budget_guard = BudgetGuard(
+            hourly_limit=config.budget.hourly_limit,
+            daily_limit=config.budget.daily_limit,
+            monthly_limit=config.budget.monthly_limit,
+        )
+        thinker = ThinkerAgent(memory=memory, budget_guard=budget_guard, config=config)
+        self_model = SelfModelStore(Path(str(getattr(config.memory, "data_dir", ".lifeforce"))) / "self_model")
+        engine = GrowthEngine(
+            data_root=Path(str(getattr(config.memory, "data_dir", ".lifeforce"))),
+            memory=memory,
+            thinker=thinker,
+            self_model=self_model,
+        )
+        result = engine.skill_manager.search(capability, limit=3)
+        console.print(Panel.fit(json.dumps(result, ensure_ascii=False, indent=2), title="🔎 Skill Search", border_style="yellow"))
+    except Exception as exc:
+        logger.error("Error in skill search: %s", exc)
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@skill_app.command("install")
+def skill_install(
+    skill_id: str = typer.Argument(..., help="技能 ID"),
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="配置文件路径"),
+) -> None:
+    """安装指定技能并更新 self-model。"""
+    try:
+        config = load_config(config_path)
+        memory = MemorySystem(config.memory.db_path, config=config.memory.model_dump())
+        budget_guard = BudgetGuard(
+            hourly_limit=config.budget.hourly_limit,
+            daily_limit=config.budget.daily_limit,
+            monthly_limit=config.budget.monthly_limit,
+        )
+        thinker = ThinkerAgent(memory=memory, budget_guard=budget_guard, config=config)
+        self_model = SelfModelStore(Path(str(getattr(config.memory, "data_dir", ".lifeforce"))) / "self_model")
+        engine = GrowthEngine(
+            data_root=Path(str(getattr(config.memory, "data_dir", ".lifeforce"))),
+            memory=memory,
+            thinker=thinker,
+            self_model=self_model,
+        )
+        installed = engine.skill_manager.install(skill_id)
+        console.print(Panel.fit(json.dumps(installed, ensure_ascii=False, indent=2), title="🧩 Skill Installed", border_style="green"))
+    except Exception as exc:
+        logger.error("Error in skill install: %s", exc)
         console.print(f"[bold red]Error:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
 

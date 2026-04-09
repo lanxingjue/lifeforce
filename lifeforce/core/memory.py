@@ -214,6 +214,10 @@ class MemorySystem:
         if self.mem0 is not None:
             try:
                 self.mem0.add(messages, user_id=user_id, metadata=metadata)
+            except KeyError as exc:  # pragma: no cover
+                self.mem0_mode = "degraded"
+                self.mem0_degraded_reason = f"mem0 schema key missing: {exc}"
+                self.logger.warning("mem0 add 出现实体字段缺失，降级到本地存储: %s", exc)
             except Exception as exc:  # pragma: no cover
                 self.logger.warning("mem0 add 失败，继续使用本地存储: %s", exc)
         return ids
@@ -231,6 +235,10 @@ class MemorySystem:
             try:
                 mem0_results = self.mem0.search(query, user_id=user_id, limit=limit * 2)
                 results.extend(self._normalize_mem0_results(mem0_results))
+            except KeyError as exc:  # pragma: no cover
+                self.mem0_mode = "degraded"
+                self.mem0_degraded_reason = f"mem0 schema key missing: {exc}"
+                self.logger.warning("mem0 search 出现实体字段缺失，降级本地检索: %s", exc)
             except Exception as exc:  # pragma: no cover
                 self.logger.warning("mem0 search 失败，降级本地检索: %s", exc)
 
@@ -363,16 +371,20 @@ class MemorySystem:
             return normalized
         for item in mem0_results:
             if isinstance(item, dict):
-                normalized.append(
-                    {
-                        "id": str(item.get("id", "")),
-                        "memory": item.get("memory", item.get("content", "")),
-                        "content": item.get("content", item.get("memory", "")),
-                        "score": float(item.get("score", 0.6)),
-                        "metadata": item.get("metadata", {}),
-                        "source": "mem0",
-                    }
-                )
+                try:
+                    normalized.append(
+                        {
+                            "id": str(item.get("id", "")),
+                            "entity_type": str(item.get("entity_type", "Unknown")),
+                            "memory": item.get("memory", item.get("content", "")),
+                            "content": item.get("content", item.get("memory", "")),
+                            "score": float(item.get("score", 0.6)),
+                            "metadata": item.get("metadata", {}),
+                            "source": "mem0",
+                        }
+                    )
+                except Exception as exc:
+                    self.logger.warning("跳过异常 mem0 结果项: %s | item=%s", exc, str(item)[:200])
         return normalized
 
     def _dedupe_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

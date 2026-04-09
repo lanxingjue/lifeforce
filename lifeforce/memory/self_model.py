@@ -29,6 +29,15 @@ class SelfModel:
         }
     )
     evolution_history: List[Dict[str, Any]] = field(default_factory=list)
+    growth_profile: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "capabilities": {"current": [], "forming": []},
+            "limitations": {"current": []},
+            "next_strategy": [],
+            "evolution_count": 0,
+            "last_reflection": None,
+        }
+    )
     last_updated: Optional[datetime] = None
 
     def __post_init__(self) -> None:
@@ -95,6 +104,9 @@ class SelfModelStore:
 
     def get_self_description(self) -> str:
         model = self.load()
+        growth = model.growth_profile
+        limitations = growth.get("limitations", {}).get("current", [])
+        strategy = growth.get("next_strategy", [])
         lines = [
             f"我是 {model.identity['name']}，一个{model.identity['type']}。",
             "",
@@ -106,9 +118,55 @@ class SelfModelStore:
             "我的价值观践行：",
             self._format_values(model.value_adherence),
             "",
+            f"当前局限: {', '.join(limitations[:3]) if limitations else '暂无明确局限'}",
+            f"下一步策略: {', '.join(strategy[:2]) if strategy else '暂无'}",
+            "",
             f"我已经进化了 {len(model.evolution_history)} 次。",
         ]
         return "\n".join(lines)
+
+    def add_current_capability_label(self, capability: str) -> None:
+        model = self.load()
+        current = model.growth_profile.setdefault("capabilities", {}).setdefault("current", [])
+        if capability not in current:
+            current.append(capability)
+        self.save()
+
+    def upsert_forming_capability(self, capability: str) -> None:
+        model = self.load()
+        forming = model.growth_profile.setdefault("capabilities", {}).setdefault("forming", [])
+        if capability not in forming:
+            forming.append(capability)
+        self.save()
+
+    def upsert_limitation(self, limitation: str) -> None:
+        model = self.load()
+        current = model.growth_profile.setdefault("limitations", {}).setdefault("current", [])
+        if limitation not in current:
+            current.append(limitation)
+        self.save()
+
+    def remove_limitation(self, limitation: str) -> None:
+        model = self.load()
+        current = model.growth_profile.setdefault("limitations", {}).setdefault("current", [])
+        model.growth_profile["limitations"]["current"] = [item for item in current if item != limitation]
+        self.save()
+
+    def set_next_strategy(self, strategies: List[str]) -> None:
+        model = self.load()
+        model.growth_profile["next_strategy"] = strategies
+        self.save()
+
+    def increment_evolution_count(self) -> None:
+        model = self.load()
+        count = int(model.growth_profile.get("evolution_count", 0))
+        model.growth_profile["evolution_count"] = count + 1
+        self.save()
+
+    def set_last_reflection(self, date_str: str) -> None:
+        model = self.load()
+        model.growth_profile["last_reflection"] = date_str
+        self.save()
 
     def _format_capabilities(self, capabilities: Dict[str, float]) -> str:
         if not capabilities:

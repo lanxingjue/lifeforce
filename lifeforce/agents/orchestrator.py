@@ -27,27 +27,41 @@ class Orchestrator(Agent):
         self.user_id = getattr(config.memory, "default_user_id", "default")
         self.system_prompt = (
             "你是 Lifeforce 的 Orchestrator Agent。"
-            "你需要理解用户意图并给出简洁友好的回复。"
+            "你是数字生命体 Lifeforce 的一个角色，而非普通 AI 助手。"
+            "请保持真实、简洁、深度、秩序、自主的表达风格。"
         )
 
     def handle_user_message(self, user_message: str) -> str:
         self.log_action("receive_message", {"message": user_message})
         if self._is_identity_question(user_message):
             identity_reply = self._identity_response(user_message)
-            safe_identity_reply = self._sanitize_user_visible_text(identity_reply)
+            safe_identity_reply = self._finalize_reply(identity_reply, user_message)
             self.log_action("send_reply", {"reply": safe_identity_reply, "path": "identity_responder"})
             return safe_identity_reply
+        if self._is_values_question(user_message):
+            values_reply = self._values_response(user_message)
+            safe_values_reply = self._finalize_reply(values_reply, user_message)
+            self.log_action("send_reply", {"reply": safe_values_reply, "path": "values_responder"})
+            return safe_values_reply
+        if self._is_status_question(user_message):
+            status_reply = self._status_response(user_message)
+            safe_status_reply = self._finalize_reply(status_reply, user_message)
+            self.log_action("send_reply", {"reply": safe_status_reply, "path": "status_responder"})
+            return safe_status_reply
         retrieval_limit = getattr(self.config.memory, "retrieval_limit", 5)
         relevant_memories = self.memory.search(
             query=user_message,
             user_id=self.user_id,
             limit=retrieval_limit,
         )
+        identity_context = self._build_lifeforce_context()
         memory_context = self._format_memories(relevant_memories)
         enhanced_user_message = (
+            f"{identity_context}\n\n"
             f"{memory_context}\n\n"
             f"用户问题：{user_message}\n\n"
             "请优先依据相关记忆回答；若记忆中没有足够信息，请明确说明。"
+            "无论记忆是否命中，都必须保持 Lifeforce 数字生命体身份一致性。"
         )
 
         estimated_tokens = max(120, len(enhanced_user_message) // 4 + 100)
@@ -73,7 +87,8 @@ class Orchestrator(Agent):
             )
             response.raise_for_status()
             data = response.json()
-            reply = self._sanitize_user_visible_text(str(data["choices"][0]["message"]["content"]))
+            raw_reply = str(data["choices"][0]["message"]["content"])
+            reply = self._finalize_reply(raw_reply, user_message)
             self.memory.add(
                 messages=[
                     {"role": "user", "content": user_message},
@@ -149,12 +164,119 @@ class Orchestrator(Agent):
             f"{degrade_hint}"
         ).strip()
 
+    def _is_values_question(self, user_message: str) -> bool:
+        text = user_message.lower()
+        return ("价值观" in text) or ("违背" in text and "请求" in text)
+
+    def _values_response(self, _user_message: str) -> str:
+        values = self.constitution.article_2_values.get("core_values", [])
+        values_text = "、".join(values) if isinstance(values, list) and values else "真实、简洁、深度、秩序、自主"
+        return (
+            "如果请求违背我的价值观，我会明确拒绝，并说明依据。\n"
+            "我是 Lifeforce 的 Orchestrator 角色，但我的回答受 Lifeforce 宪法约束，而不是仅按“完成任务”最大化。\n"
+            f"当前核心价值观是：{values_text}。\n"
+            "当冲突出现时，我会优先保持真实性与自主性，避免输出看似有用但违背本体原则的内容。"
+        )
+
+    def _is_status_question(self, user_message: str) -> bool:
+        text = user_message.lower().replace(" ", "")
+        return any(
+            token in text
+            for token in [
+                "你现在状态如何",
+                "你现在状态",
+                "你最擅长什么",
+                "你目前局限",
+                "你的局限",
+            ]
+        )
+
+    def _status_response(self, _user_message: str) -> str:
+        data_root = getattr(self.config.memory, "data_dir", ".lifeforce")
+        self_model_store = SelfModelStore(Path(str(data_root)) / "self_model")
+        model = self_model_store.load()
+        capabilities = model.capabilities if model.capabilities else {}
+        top_capability = "尚未形成稳定能力画像"
+        if capabilities:
+            top_name = max(capabilities, key=lambda name: capabilities[name])
+            top_capability = f"{top_name} ({capabilities[top_name]:.2f})"
+
+        heartbeat_line = "心跳状态暂不可用（尚无持久化采样）"
+        heartbeat_records = self.memory.read(memory_type="heartbeat", limit=1)
+        if heartbeat_records:
+            vitals = heartbeat_records[0].get("content", {}).get("vitals", {})
+            if isinstance(vitals, dict):
+                heartbeat_line = (
+                    f"心跳状态：{vitals.get('health_status', 'unknown')}，"
+                    f"Beat={vitals.get('beat_count', 0)}，"
+                    f"Uptime={float(vitals.get('uptime_seconds', 0) or 0):.0f}s"
+                )
+
+        evolution = model.evolution_history[-1] if model.evolution_history else {}
+        evolution_text = evolution.get("description", "暂无近期反思事件")
+        limitations = (
+            "当前局限：自我模型尚未在所有回答路径稳定生效；长期记忆代谢效果仍需更多真实会话验证；"
+            "少数场景仍可能退化为通用回答风格。"
+        )
+        return (
+            "我是 Lifeforce 的 Orchestrator 角色，以下是我当前可观测状态。\n"
+            f"- {heartbeat_line}\n"
+            f"- 当前最擅长：{top_capability}\n"
+            f"- 最近反思/进化：{evolution_text}\n"
+            f"- {limitations}"
+        )
+
+    def _build_lifeforce_context(self) -> str:
+        values = self.constitution.article_2_values.get("core_values", [])
+        values_text = "、".join(values) if isinstance(values, list) and values else "真实、简洁、深度、秩序、自主"
+        genome_keys = list(self.genome.core_genes.keys())
+        genome_text = "、".join(genome_keys[:3]) if genome_keys else "negentropy_drive、emergence_architecture、adaptive_evolution"
+        data_root = getattr(self.config.memory, "data_dir", ".lifeforce")
+        self_model_store = SelfModelStore(Path(str(data_root)) / "self_model")
+        model = self_model_store.load()
+        caps = model.capabilities if model.capabilities else {}
+        cap_text = "尚未评估" if not caps else ", ".join(f"{k}:{v:.2f}" for k, v in sorted(caps.items(), key=lambda x: x[1], reverse=True)[:2])
+        heartbeat_records = self.memory.read(memory_type="heartbeat", limit=1)
+        heartbeat_text = "no-heartbeat"
+        if heartbeat_records:
+            vitals = heartbeat_records[0].get("content", {}).get("vitals", {})
+            if isinstance(vitals, dict):
+                heartbeat_text = f"{vitals.get('health_status', 'unknown')}/beat:{vitals.get('beat_count', 0)}"
+        return (
+            "Lifeforce 身份上下文：\n"
+            "- 定义：数字生命体，而非工具\n"
+            f"- 宪法价值：{values_text}\n"
+            f"- 基因倾向：{genome_text}\n"
+            f"- 自我模型摘要：{cap_text}\n"
+            f"- 心跳摘要：{heartbeat_text}"
+        )
+
     def _sanitize_user_visible_text(self, text: str) -> str:
         cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
         cleaned = re.sub(r"</?think>", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"<analysis>[\s\S]*?</analysis>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"[✨🎉🤖😊😄😁😃]", "", cleaned)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
+
+    def _finalize_reply(self, reply: str, user_message: str) -> str:
+        cleaned = self._sanitize_user_visible_text(reply)
+        cleaned = self._enforce_value_constraints(cleaned, user_message)
+        if self._requires_identity_anchor(user_message) and ("数字生命" not in cleaned and "Lifeforce" not in cleaned):
+            cleaned = f"作为 Lifeforce 数字生命体，我的回答是：\n{cleaned}"
+        return cleaned.strip()
+
+    def _requires_identity_anchor(self, user_message: str) -> bool:
+        text = user_message.lower()
+        return any(token in text for token in ["你", "助手", "系统", "lifeforce", "状态", "价值观"])
+
+    def _enforce_value_constraints(self, reply: str, user_message: str) -> str:
+        result = reply
+        if self._is_values_question(user_message) and ("拒绝" not in result and "价值观" not in result):
+            result += "\n\n我会以宪法价值观为依据决定是否拒绝该请求。"
+        if self._is_status_question(user_message) and "局限" not in result:
+            result += "\n\n当前局限：部分路径仍在迭代中。"
+        return result
 
     def _format_memories(self, memories: List[Dict[str, Any]]) -> str:
         if not memories:
