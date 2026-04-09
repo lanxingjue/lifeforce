@@ -16,7 +16,7 @@ class BudgetGuard:
             "daily": daily_limit,
             "monthly": monthly_limit,
         }
-        self.usage = defaultdict(int)
+        self.usage: dict[str, int] = defaultdict(int)
         self.reset_times = {
             "hourly": datetime.now() + timedelta(hours=1),
             "daily": datetime.now() + timedelta(days=1),
@@ -56,3 +56,7 @@ class BudgetGuard:
             }
             for period in self.limits
         }
+
+    def get_remaining(self, period: str = "hourly") -> int:
+        self._check_reset()
+        return int(self.limits[period] - self.usage[period])

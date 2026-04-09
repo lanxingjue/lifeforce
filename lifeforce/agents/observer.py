@@ -11,6 +11,7 @@ from watchdog.observers import Observer as WatchdogObserver
 from lifeforce.core.agent import Agent
 from lifeforce.core.budget import BudgetGuard
 from lifeforce.core.memory import MemorySystem
+from lifeforce.memory.emergence import EmergenceDetector, EmergenceEvent
 from lifeforce.utils.logger import setup_logger
 
 
@@ -69,6 +70,7 @@ class ObserverAgent(Agent):
         project_internal = str(Path(".lifeforce").resolve()).lower()
         self.ignore_paths = [project_internal]
         self.ignore_suffixes = [".db-journal", ".log"]
+        self.emergence_detector = EmergenceDetector(Path(".lifeforce/emergence"), self.genome)
 
     def start_watching(self, paths: Optional[List[str]] = None) -> None:
         if self.is_watching:
@@ -147,7 +149,41 @@ class ObserverAgent(Agent):
             limit = message.get("limit", 10)
             changes = self.memory.read(memory_type="file_change", limit=limit)
             return {"changes": changes}
+        if command == "observe_task_result":
+            emergence = self.observe_task_result(
+                task_id=message.get("task_id", "unknown"),
+                agents_involved=message.get("agents_involved", []),
+                expected_outcome=message.get("expected_outcome", ""),
+                actual_outcome=message.get("actual_outcome", ""),
+                context=message.get("context", {}),
+            )
+            return {"emergence": emergence.to_dict() if emergence else None}
         return {"error": f"Unknown command: {command}"}
+
+    def observe_task_result(
+        self,
+        task_id: str,
+        agents_involved: List[str],
+        expected_outcome: str,
+        actual_outcome: str,
+        context: Dict[str, Any],
+    ) -> Optional[EmergenceEvent]:
+        emergence = self.emergence_detector.detect(
+            agents_involved=agents_involved,
+            expected_outcome=expected_outcome,
+            actual_outcome=actual_outcome,
+            context=context,
+        )
+        if emergence is not None:
+            self.memory.write(
+                {
+                    "type": "emergence",
+                    "task_id": task_id,
+                    "emergence": emergence.to_dict(),
+                    "importance": 0.8,
+                }
+            )
+        return emergence
 
 
 # Backward-compatible alias

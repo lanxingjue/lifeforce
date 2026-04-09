@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import json
-import math
+import re
 import sqlite3
 import threading
 
@@ -35,6 +35,8 @@ class MemorySystem:
         self.config = config or {}
         self.decay_enabled = self.config.get("decay_enabled", True)
         self.decay_half_life_days = int(self.config.get("decay_half_life_days", 30))
+        self.mem0_mode = "primary"
+        self.mem0_degraded_reason = ""
         self.mem0 = self._init_mem0(self.config)
 
     def _init_mem0(self, config: Dict[str, Any]) -> Any:
@@ -92,12 +94,17 @@ class MemorySystem:
             )
             return mem0_instance
         except Exception as exc:  # pragma: no cover - runtime fallback
+            self.mem0_mode = "degraded"
+            self.mem0_degraded_reason = str(exc)
             self.logger.warning("初始化 mem0 失败，降级到本地模式: %s", exc)
             return None
 
     def _init_db(self) -> None:
         with self._lock:
             cursor = self.conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memories (
@@ -115,6 +122,13 @@ class MemorySystem:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_type ON memories(type)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON memories(created_at)")
             self.conn.commit()
+
+    def memory_runtime_status(self) -> Dict[str, str]:
+        mode = self.mem0_mode
+        reason = self.mem0_degraded_reason
+        if mode == "degraded" and re.search(r"lock|busy|could not set lock", reason, flags=re.IGNORECASE):
+            mode = "degraded_lock_conflict"
+        return {"mode": mode, "reason": reason}
 
     # -------- v1 compatibility --------
     def write(self, memory: Dict[str, Any]) -> int:
@@ -134,7 +148,8 @@ class MemorySystem:
                 ),
             )
             self.conn.commit()
-            return int(cursor.lastrowid)
+            lastrowid = cursor.lastrowid
+            return int(lastrowid) if lastrowid is not None else 0
 
     def read(self, memory_type: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
         with self._lock:
@@ -284,7 +299,6 @@ class MemorySystem:
         tokens = [token.strip().lower() for token in text.split(" ") if token.strip()]
         compact = "".join(tokens)
         if compact:
-            # 中文等无空格文本，补充 2-gram token，提升语义近似召回。
             bigrams = [compact[i : i + 2] for i in range(max(len(compact) - 1, 0))]
             tokens.extend(bigrams)
         return tokens
@@ -399,13 +413,14 @@ class MemorySystem:
             cursor = self.conn.cursor()
             now = datetime.now().isoformat()
             for memory_id in ids:
+                parsed_id = int(memory_id) if memory_id is not None else 0
                 cursor.execute(
                     """
                     UPDATE memories
                     SET last_accessed = ?, access_count = access_count + 1
                     WHERE id = ?
                     """,
-                    (now, int(memory_id)),
+                    (now, parsed_id),
                 )
             self.conn.commit()
 

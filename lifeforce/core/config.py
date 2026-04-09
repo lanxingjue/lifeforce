@@ -1,13 +1,15 @@
 """配置管理。"""
 
+from importlib import import_module
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+
+yaml = import_module("yaml")
 
 
 class MemoryConfig(BaseModel):
@@ -29,6 +31,7 @@ class MemoryConfig(BaseModel):
             "config": {"db": "./data/kuzu_db"},
         }
     )
+    data_dir: str = ".lifeforce"
 
 
 class BudgetConfig(BaseModel):

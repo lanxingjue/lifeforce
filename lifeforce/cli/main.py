@@ -10,9 +10,13 @@ from rich.panel import Panel
 
 from lifeforce.agents.observer import ObserverAgent
 from lifeforce.agents.orchestrator import Orchestrator
+from lifeforce.agents.self_modeler import SelfModelerAgent
+from lifeforce.agents.thinker import ThinkerAgent
 from lifeforce.core.budget import BudgetGuard
 from lifeforce.core.config import load_config
 from lifeforce.core.memory import MemorySystem
+from lifeforce.genome import load_constitution
+from lifeforce.heartbeat import CoreHeartbeat, HeartbeatScheduler, Vitals
 from lifeforce.utils.logger import setup_logger
 
 app = typer.Typer(name="lifeforce", help="Lifeforce - A digital life form", add_completion=False)
@@ -28,7 +32,15 @@ def chat(
     """与 Lifeforce 对话。"""
     try:
         config = load_config(config_path)
-        console.print(Panel.fit("Lifeforce is alive", border_style="green"))
+        constitution = load_constitution()
+        core_values = ", ".join(constitution.article_2_values.get("core_values", []))
+        console.print(
+            Panel.fit(
+                f"🌱 Lifeforce v{constitution.version}\n核心价值观: {core_values}\n状态: {constitution.status}",
+                title="Lifeforce Constitution",
+                border_style="green",
+            )
+        )
 
         memory_config = config.memory.model_dump()
         memory_config["openai_base_url"] = config.llm.base_url
@@ -58,9 +70,78 @@ def chat(
 @app.command()
 def status() -> None:
     """查看 Lifeforce 状态。"""
-    console.print("[bold green]Lifeforce Status[/bold green]")
-    console.print("Version: 0.1.0 (MVP)")
-    console.print("Status: Running")
+    try:
+        config = load_config()
+        memory_config = config.memory.model_dump()
+        memory_config["openai_base_url"] = config.llm.base_url
+        try:
+            memory_config["openai_api_key"] = config.llm.api_key
+        except Exception:
+            pass
+        memory = MemorySystem(config.memory.db_path, config=memory_config)
+        records = memory.read(memory_type="heartbeat", limit=1)
+        if records:
+            vitals = Vitals.from_dict(records[0]["content"]["vitals"])
+            console.print(
+                Panel.fit(
+                    f"💓 Beat Count: {vitals.beat_count}\n"
+                    f"⏱️  Uptime: {vitals.uptime_seconds:.0f}s\n"
+                    f"🏥 Health: {vitals.health_status}\n"
+                    f"✅ Tasks Completed: {vitals.tasks_completed}\n"
+                    f"❌ Tasks Failed: {vitals.tasks_failed}\n"
+                    f"🧠 Memories: {vitals.memories_count}",
+                    title="Lifeforce Status",
+                    border_style="green",
+                )
+            )
+        else:
+            console.print("[yellow]No heartbeat data found. Start daemon first.[/yellow]")
+    except Exception as exc:
+        logger.error("Error in status: %s", exc)
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def daemon(config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="配置文件路径")) -> None:
+    """启动守护进程模式（持续心跳）。"""
+    console.print("[bold green]🌱 Starting Lifeforce daemon...[/bold green]")
+    try:
+        config = load_config(config_path)
+        memory_config = config.memory.model_dump()
+        memory_config["openai_base_url"] = config.llm.base_url
+        try:
+            memory_config["openai_api_key"] = config.llm.api_key
+        except Exception:
+            pass
+        memory = MemorySystem(config.memory.db_path, config=memory_config)
+        budget_guard = BudgetGuard(
+            hourly_limit=config.budget.hourly_limit,
+            daily_limit=config.budget.daily_limit,
+            monthly_limit=config.budget.monthly_limit,
+        )
+        heartbeat = CoreHeartbeat(memory, budget_guard)
+        scheduler = HeartbeatScheduler(heartbeat)
+        scheduler.start()
+        console.print("[bold green]💚 Lifeforce is alive![/bold green]")
+        console.print("Press Ctrl+C to stop")
+        while True:
+            time.sleep(1)
+            if int(time.time()) % 60 == 0:
+                vitals = scheduler.get_vitals()
+                console.print(
+                    f"💓 Beat #{vitals.beat_count} | Health: {vitals.health_status} | Uptime: {vitals.uptime_seconds:.0f}s"
+                )
+    except KeyboardInterrupt:
+        try:
+            scheduler.stop()
+        except Exception:
+            pass
+        console.print("[bold red]💔 Lifeforce stopped[/bold red]")
+    except Exception as exc:
+        logger.error("Error in daemon: %s", exc)
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
 
 
 @app.command("observe")
@@ -138,6 +219,42 @@ def observe_recent(
 
 
 @app.command()
+def reflect(
+    deep: bool = typer.Option(False, "--deep", is_flag=True, flag_value=True, help="使用元认知模式反思"),
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="配置文件路径"),
+) -> None:
+    """触发反思，支持深度元认知模式。"""
+    if deep:
+        console.print("[bold cyan]🧠 启动元认知反思模式...[/bold cyan]")
+    else:
+        console.print("[bold cyan]🤔 Reflecting on self...[/bold cyan]")
+    try:
+        config = load_config(config_path)
+        memory_config = config.memory.model_dump()
+        memory_config["openai_base_url"] = config.llm.base_url
+        try:
+            memory_config["openai_api_key"] = config.llm.api_key
+        except Exception:
+            pass
+        memory = MemorySystem(config.memory.db_path, config=memory_config)
+        budget_guard = BudgetGuard(
+            hourly_limit=config.budget.hourly_limit,
+            daily_limit=config.budget.daily_limit,
+            monthly_limit=config.budget.monthly_limit,
+        )
+        self_modeler = SelfModelerAgent(memory=memory, budget_guard=budget_guard, config=config)
+        thinker = ThinkerAgent(memory=memory, budget_guard=budget_guard, config=config)
+        base_description = self_modeler.reflect_on_self()
+        thought = thinker.think("反思今天的行为和决策", mode="meta" if deep else "normal")
+        output = f"{base_description}\n\n[思考输出]\n{thought}"
+        console.print(Panel.fit(output, title="🧠 Self-Reflection", border_style="cyan"))
+    except Exception as exc:
+        logger.error("Error in reflect: %s", exc)
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
 def init(path: Path = typer.Argument(Path.cwd(), help="初始化路径")) -> None:
     """初始化 Lifeforce 项目。"""
     config_file = path / "config.yaml"
@@ -157,6 +274,7 @@ def init(path: Path = typer.Argument(Path.cwd(), help="初始化路径")) -> Non
 
 DEFAULT_CONFIG = """memory:
   db_path: ".lifeforce/memory.db"
+  data_dir: ".lifeforce"
   default_user_id: "wells"
   decay_enabled: true
   decay_half_life_days: 30

@@ -7,6 +7,7 @@ import uuid
 
 from lifeforce.core.budget import BudgetGuard
 from lifeforce.core.memory import MemorySystem
+from lifeforce.genome import load_constitution, load_genome
 from lifeforce.utils.logger import setup_logger
 
 
@@ -19,8 +20,17 @@ class Agent(ABC):
         self.role = role
         self.memory = memory
         self.budget_guard = budget_guard
+        self.genome = load_genome()
+        self.constitution = load_constitution()
+        self.values = self.genome.value_genes
         self.logger = setup_logger(name)
         self.logger.info("Agent %s initialized (ID: %s)", name, self.id)
+        self.logger.info(
+            "🌱 Agent %s born with genome v%s, philosophy: %s",
+            name,
+            self.genome.version,
+            self.genome.philosophy,
+        )
 
     @abstractmethod
     def process(self, message: Dict[str, Any]) -> Dict[str, Any]:

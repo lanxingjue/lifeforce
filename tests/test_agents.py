@@ -57,3 +57,10 @@ def test_executor_unknown_skill(memory: MemorySystem, budget_guard: BudgetGuard)
     result = executor.process({"skill": "unknown", "params": {}})
     assert "error" in result
 
+
+def test_executor_select_skills_with_chaos_edge(memory: MemorySystem, budget_guard: BudgetGuard) -> None:
+    executor = ExecutorAgent(memory, budget_guard, MockConfig())
+    selected = executor.select_skills({"intent": "请调用 llm 生成回复"})
+    assert selected
+    assert all(item in executor.skills for item in selected)
+
