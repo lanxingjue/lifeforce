@@ -14,6 +14,7 @@ from lifeforce.agents.orchestrator import Orchestrator
 from lifeforce.agents.self_modeler import SelfModelerAgent
 from lifeforce.agents.thinker import ThinkerAgent
 from lifeforce.core.budget import BudgetGuard
+from lifeforce.core.apiyi_monitor import ApiyiMonitor
 from lifeforce.core.config import load_config
 from lifeforce.core.memory import MemorySystem
 from lifeforce.growth import GrowthEngine
@@ -103,6 +104,36 @@ def status() -> None:
             console.print("[yellow]No heartbeat data found. Start daemon first.[/yellow]")
     except Exception as exc:
         logger.error("Error in status: %s", exc)
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def billing(config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="配置文件路径")) -> None:
+    """查看 APIYI 用量、估算余额与模型建议。"""
+    try:
+        config = load_config(config_path)
+        monitor = ApiyiMonitor(config.llm.api_key)
+        usage = monitor.summarize_usage(page_size=10)
+        models = monitor.suggest_models()
+        model_usage = usage.get("model_usage_recent", {})
+        top = sorted(model_usage.items(), key=lambda item: item[1], reverse=True)[:5]
+        top_text = "\n".join(f"- {name}: {count}" for name, count in top) if top else "- 暂无"
+        model_text = "\n".join(f"- {name}" for name in models[:10]) if models else "- 暂无"
+        console.print(
+            Panel.fit(
+                f"近 10 条日志 quota 已用: {usage['quota_used_recent']}\n"
+                f"tokens: prompt={usage['prompt_tokens_recent']}, completion={usage['completion_tokens_recent']}\n"
+                f"估算已用美元: ${usage['estimated_used_usd_recent']}\n"
+                f"估算剩余美元: ${usage['estimated_remaining_usd']}\n\n"
+                f"最近模型使用:\n{top_text}\n\n"
+                f"可选模型建议:\n{model_text}",
+                title="APIYI Billing & Models",
+                border_style="magenta",
+            )
+        )
+    except Exception as exc:
+        logger.error("Error in billing: %s", exc)
         console.print(f"[bold red]Error:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
 

@@ -99,3 +99,31 @@ def test_entity_type_missing_is_tolerated(monkeypatch, tmp_path: Path) -> None:
     assert "处理消息时出错" not in reply
     assert "正常回答" in reply
     memory.close()
+
+
+def test_billing_responder(monkeypatch, tmp_path: Path) -> None:
+    orchestrator, memory = _build_orchestrator(tmp_path)
+
+    class _Monitor:
+        def __init__(self, _key: str) -> None:
+            pass
+
+        def summarize_usage(self, page_size: int = 10):
+            return {
+                "quota_used_recent": 100,
+                "prompt_tokens_recent": 1000,
+                "completion_tokens_recent": 200,
+                "estimated_used_usd_recent": 1.0,
+                "estimated_remaining_usd": 29.0,
+                "model_usage_recent": {"gpt-4.1-nano": 8},
+            }
+
+        def suggest_models(self):
+            return ["MiniMax-M2.7", "gpt-4.1-nano"]
+
+    monkeypatch.setattr("lifeforce.agents.orchestrator.ApiyiMonitor", _Monitor)
+    reply = orchestrator.handle_user_message("我用了多少，还剩多少钱？模型如何选？")
+    assert "估算已用金额" in reply
+    assert "估算剩余金额" in reply
+    assert "可选模型建议" in reply
+    memory.close()

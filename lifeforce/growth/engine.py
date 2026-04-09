@@ -10,6 +10,9 @@ import subprocess
 from lifeforce.agents.thinker import ThinkerAgent
 from lifeforce.core.memory import MemorySystem
 from lifeforce.genome import load_genome
+from lifeforce.growth.learning import learning_pipeline
+from lifeforce.growth.pipeline import collect_inputs as collect_inputs_pipeline
+from lifeforce.growth.reflection import reflect_deep as reflect_deep_pipeline
 from lifeforce.memory.emergence import EmergenceDetector
 from lifeforce.memory.self_model import SelfModelStore
 from lifeforce.utils.logger import setup_logger
@@ -109,30 +112,19 @@ class LearningPipeline:
         return [{"url": item, "title": f"{topic} 学习材料"} for item in urls[:limit]]
 
     def learn_topic(self, topic: str, limit: int = 3) -> Dict[str, Any]:
-        materials = self.search_materials(topic, limit=limit)
-        insights: List[str] = []
-        for item in materials:
-            content = f"材料主题: {topic}; 来源: {item['url']}; 核心: 复杂系统中的反馈、代谢、涌现。"
-            guided = self.thinker.think_with_tool(
-                problem=f"提取{topic}的关键洞察",
-                tool_name="first_principles",
-                context={"source": item["url"]},
-            )
-            insight = f"{content}\n{guided}"
-            insights.append(insight)
-            self.memory.write(
-                {
-                    "type": "learning",
-                    "content": {
-                        "topic": topic,
-                        "source": item["url"],
-                        "insight": insight,
-                        "date": datetime.now().date().isoformat(),
-                    },
-                    "importance": 0.65,
-                }
-            )
-        return {"topic": topic, "materials": materials, "insights": insights}
+        result = learning_pipeline(topic=topic, memory=self.memory, vitals=None, data_root=self.data_root)
+        materials = list(result.get("materials", []))
+        insights = list(result.get("insights", []))
+        if limit > 0:
+            materials = materials[:limit]
+            insights = insights[: max(limit, len(insights))]
+        return {
+            "topic": result.get("topic", topic),
+            "success": result.get("success", True),
+            "insights_count": result.get("insights_count", len(insights)),
+            "materials": materials,
+            "insights": insights,
+        }
 
 
 class GrowthEngine:
@@ -165,11 +157,15 @@ class GrowthEngine:
         }
 
     def collect_inputs(self) -> GrowthInputs:
-        creator_logs = self._read_text_pool(self.data_root / "creator_logs", "*.md", limit=5)
-        system_logs = self._read_system_logs()
-        materials = self._read_text_pool(self.data_root / "materials", "*.*", limit=3)
-        self_outputs = self._read_text_pool(self.data_root / "self_outputs", "*.*", limit=6)
-        env_changes = self._read_env_changes()
+        collected = collect_inputs_pipeline(memory=self.memory, vitals=None, data_root=self.data_root)
+        creator_logs = [str(item.get("content", "")) for item in collected.get("creator_logs", [])]
+        system_logs = [str(item.get("content", "")) for item in collected.get("system_logs", [])]
+        materials = [
+            str(item) if not isinstance(item, dict) else str(item.get("insights", item.get("content", "")))
+            for item in collected.get("materials", [])
+        ]
+        self_outputs = [str(item.get("content", "")) for item in collected.get("self_outputs", [])]
+        env_changes = [str(item.get("content", "")) for item in collected.get("env_changes", [])]
         return GrowthInputs(
             creator_logs=creator_logs,
             system_logs=system_logs,
@@ -179,37 +175,16 @@ class GrowthEngine:
         )
 
     def reflect_deep(self, inputs: GrowthInputs) -> Dict[str, Any]:
-        events = (inputs.creator_logs + inputs.system_logs + inputs.materials + inputs.self_outputs + inputs.env_changes)[:20]
-        top3 = events[:3] if events else ["无显著事件", "无显著事件", "无显著事件"]
-        limitation = "自我模型尚未在所有回答路径稳定生效"
-        strategy = "将状态查询和价值观约束覆盖到更多普通对话路径"
-        reflection_text = (
-            "今日反思:\n"
-            f"1) 重要事件: {top3}\n"
-            "2) 重复模式: 用户持续追问身份一致性与状态透明度\n"
-            "3) 结构性失败: 个别路径会退化为通用助手语气\n"
-            "4) 最像 Lifeforce 的行为: 以宪法约束拒绝违背价值观请求\n"
-            "5) 最不像 Lifeforce 的行为: 在上下文不足时给出空泛回答\n"
-            f"6) 当前局限: {limitation}\n"
-            "7) 成功模式: 身份 responder + 状态 responder 的协同\n"
-            f"8) 明日策略: {strategy}\n"
-        )
-        self._update_self_model_after_reflection(limitation=limitation, strategy=strategy)
-        self.memory.write({"type": "reflection_report", "content": {"text": reflection_text}, "importance": 0.8})
+        _ = inputs
+        result = reflect_deep_pipeline(memory=self.memory, vitals=None, self_model=self.self_model, data_root=self.data_root)
         emergence = self.emergence.detect(
             agents_involved=["Orchestrator", "Thinker", "SelfModeler"],
             expected_outcome="稳定身份一致性回答",
             actual_outcome="在多类问题下保持身份锚点并可解释局限",
             context={"success": True, "is_novel": True},
         )
-        return {
-            "text": reflection_text,
-            "limitation": limitation,
-            "strategy": strategy,
-            "emergence": emergence.to_dict() if emergence else None,
-            "missing_capability": "实时信息搜索",
-            "learning_topic": "混沌边缘",
-        }
+        result["emergence"] = emergence.to_dict() if emergence else None
+        return result
 
     def _update_self_model_after_reflection(self, limitation: str, strategy: str) -> None:
         self.self_model.upsert_limitation(limitation)

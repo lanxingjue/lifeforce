@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 import httpx
 
+from lifeforce.core.apiyi_monitor import ApiyiMonitor
 from lifeforce.core.agent import Agent
 from lifeforce.core.budget import BudgetGuard
 from lifeforce.core.memory import MemorySystem
@@ -48,6 +49,11 @@ class Orchestrator(Agent):
             safe_status_reply = self._finalize_reply(status_reply, user_message)
             self.log_action("send_reply", {"reply": safe_status_reply, "path": "status_responder"})
             return safe_status_reply
+        if self._is_billing_question(user_message):
+            billing_reply = self._billing_response()
+            safe_billing_reply = self._finalize_reply(billing_reply, user_message)
+            self.log_action("send_reply", {"reply": safe_billing_reply, "path": "billing_responder"})
+            return safe_billing_reply
         retrieval_limit = getattr(self.config.memory, "retrieval_limit", 5)
         relevant_memories = self.memory.search(
             query=user_message,
@@ -224,6 +230,41 @@ class Orchestrator(Agent):
             f"- 当前最擅长：{top_capability}\n"
             f"- 最近反思/进化：{evolution_text}\n"
             f"- {limitations}"
+        )
+
+    def _is_billing_question(self, user_message: str) -> bool:
+        text = user_message.lower().replace(" ", "")
+        return any(
+            token in text
+            for token in [
+                "用了多少",
+                "花了多少",
+                "还剩多少钱",
+                "余额",
+                "账单",
+                "配额",
+                "用量",
+                "模型选择",
+                "模型配置",
+            ]
+        )
+
+    def _billing_response(self) -> str:
+        monitor = ApiyiMonitor(self.config.llm.api_key)
+        usage = monitor.summarize_usage(page_size=10)
+        models = monitor.suggest_models()
+        top_models = sorted(usage["model_usage_recent"].items(), key=lambda item: item[1], reverse=True)[:3]
+        top_models_text = "，".join(f"{name}x{count}" for name, count in top_models) if top_models else "暂无"
+        models_text = "、".join(models[:6])
+        return (
+            "这是我当前的 APIYI 用量检查（近 10 条日志）。\n"
+            f"- 已用 quota 点：{usage['quota_used_recent']}\n"
+            f"- 已用 tokens：prompt={usage['prompt_tokens_recent']}，completion={usage['completion_tokens_recent']}\n"
+            f"- 估算已用金额（按 APIYI_USD_PER_QUOTA 换算）：${usage['estimated_used_usd_recent']}\n"
+            f"- 估算剩余金额（按 APIYI_BALANCE_USD 基线）：${usage['estimated_remaining_usd']}\n"
+            f"- 最近主要模型：{top_models_text}\n"
+            f"- 可选模型建议：{models_text}\n"
+            "说明：美元为本地可配置估算，若要精确账单请以 APIYI 控制台为准。"
         )
 
     def _build_lifeforce_context(self) -> str:
