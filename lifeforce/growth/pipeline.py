@@ -15,7 +15,7 @@ def collect_inputs(
     inputs: Dict[str, List[Any]] = {
         "creator_logs": _read_creator_logs(root),
         "system_logs": _read_system_logs(root),
-        "materials": [],
+        "materials": _read_materials(root),
         "self_outputs": _read_self_outputs(root),
         "env_changes": _read_env_changes(root),
     }
@@ -41,6 +41,14 @@ def _read_creator_logs(root: Path) -> List[Dict[str, str]]:
 
 def _read_system_logs(root: Path) -> List[Dict[str, str]]:
     path = root / "system_logs"
+    if not path.exists():
+        return []
+    files = sorted(path.glob("*.*"), key=lambda p: p.stat().st_mtime, reverse=True)[:20]
+    return [{"file": item.name, "content": item.read_text(encoding="utf-8", errors="ignore")} for item in files]
+
+
+def _read_materials(root: Path) -> List[Dict[str, str]]:
+    path = root / "materials"
     if not path.exists():
         return []
     files = sorted(path.glob("*.*"), key=lambda p: p.stat().st_mtime, reverse=True)[:20]

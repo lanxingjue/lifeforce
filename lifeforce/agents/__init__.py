@@ -1,4 +1,5 @@
 from .executor import Executor, ExecutorAgent
+from .market_observer import MarketObserver
 from .thinker import ThinkerAgent
 from .observer import Observer, ObserverAgent
 from .orchestrator import Orchestrator
@@ -10,6 +11,7 @@ __all__ = [
     "ObserverAgent",
     "Executor",
     "ExecutorAgent",
+    "MarketObserver",
     "ThinkerAgent",
     "SelfModelerAgent",
 ]

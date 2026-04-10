@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import json
 import re
+import shutil
 import sqlite3
 import threading
 
@@ -58,14 +59,11 @@ class MemorySystem:
                 or config.get("base_url")
                 or "https://api.openai.com/v1"
             )
+            enable_graph_store = bool(config.get("enable_graph_store", False))
             mem0_config = {
                 "vector_store": config.get(
                     "vector_store",
                     {"provider": "chroma", "config": {"path": "./data/chroma_db"}},
-                ),
-                "graph_store": config.get(
-                    "graph_store",
-                    {"provider": "kuzu", "config": {"db": "./data/kuzu_db"}},
                 ),
                 "llm": {
                     "provider": "openai",
@@ -84,20 +82,139 @@ class MemorySystem:
                     },
                 },
             }
+            if enable_graph_store:
+                mem0_config["graph_store"] = config.get(
+                    "graph_store",
+                    {"provider": "kuzu", "config": {"db": "./data/kuzu_db"}},
+                )
+            self._ensure_store_dirs(mem0_config)
             mem0_instance = Mem0Memory.from_config(mem0_config)
             vector_provider = mem0_config["vector_store"].get("provider", "unknown")
-            graph_provider = mem0_config["graph_store"].get("provider", "unknown")
-            self.logger.info(
-                "mem0 initialized with provider=%s+%s (mode=primary)",
-                vector_provider,
-                graph_provider,
-            )
+            if enable_graph_store:
+                graph_provider = mem0_config["graph_store"].get("provider", "unknown")
+                self.logger.info(
+                    "mem0 initialized with provider=%s+%s (mode=primary)",
+                    vector_provider,
+                    graph_provider,
+                )
+                self.mem0_mode = "primary"
+            else:
+                self.logger.info("mem0 initialized with provider=%s (mode=primary_vector_only)", vector_provider)
+                self.mem0_mode = "primary_vector_only"
             return mem0_instance
         except Exception as exc:  # pragma: no cover - runtime fallback
+            if "_type" in str(exc):
+                self.logger.warning("检测到 Chroma 配置格式不兼容（_type），尝试自动修复并重建向量库")
+                redirected = self._redirect_chroma_store_path(mem0_config)
+                repaired = redirected or self._repair_chroma_store(mem0_config)
+                if repaired:
+                    try:
+                        self._ensure_store_dirs(mem0_config)
+                        mem0_instance = Mem0Memory.from_config(mem0_config)
+                        vector_provider = mem0_config["vector_store"].get("provider", "unknown")
+                        graph_provider = mem0_config["graph_store"].get("provider", "unknown")
+                        self.mem0_mode = "primary_rebuilt"
+                        self.logger.info(
+                            "mem0 重建成功 with provider=%s+%s (mode=primary_rebuilt)",
+                            vector_provider,
+                            graph_provider,
+                        )
+                        return mem0_instance
+                    except Exception as retry_exc:
+                        self.logger.warning("mem0 重建后仍失败，继续降级: %s", retry_exc)
+                        vector_only = self._build_vector_only_config(mem0_config)
+                        try:
+                            self._ensure_store_dirs(vector_only)
+                            mem0_instance = Mem0Memory.from_config(vector_only)
+                            self.mem0_mode = "primary_vector_only"
+                            self.logger.info("mem0 vector-only 模式初始化成功")
+                            return mem0_instance
+                        except Exception as vector_exc:
+                            self.logger.warning("mem0 vector-only 模式仍失败: %s", vector_exc)
+            if re.search(r"kuzu|graph|lock|\.lock", str(exc), flags=re.IGNORECASE):
+                vector_only = self._build_vector_only_config(mem0_config)
+                try:
+                    self._ensure_store_dirs(vector_only)
+                    mem0_instance = Mem0Memory.from_config(vector_only)
+                    self.mem0_mode = "primary_vector_only"
+                    self.logger.info("mem0 因图存储异常，已切换 vector-only 模式")
+                    return mem0_instance
+                except Exception as vector_exc:
+                    self.logger.warning("mem0 vector-only 降级失败: %s", vector_exc)
             self.mem0_mode = "degraded"
             self.mem0_degraded_reason = str(exc)
             self.logger.warning("初始化 mem0 失败，降级到本地模式: %s", exc)
             return None
+
+    def _repair_chroma_store(self, mem0_config: Dict[str, Any]) -> bool:
+        try:
+            vector_store = mem0_config.get("vector_store", {})
+            config = vector_store.get("config", {}) if isinstance(vector_store, dict) else {}
+            path_raw = config.get("path")
+            if not path_raw:
+                return False
+            path = Path(str(path_raw))
+            if not path.exists():
+                return False
+            backup = path.with_name(f"{path.name}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            shutil.move(str(path), str(backup))
+            path.mkdir(parents=True, exist_ok=True)
+            self.logger.warning("已备份旧 Chroma 数据目录到: %s", backup)
+            return True
+        except Exception as exc:
+            self.logger.warning("自动修复 Chroma 失败: %s", exc)
+            return False
+
+    def _redirect_chroma_store_path(self, mem0_config: Dict[str, Any]) -> bool:
+        try:
+            vector_store = mem0_config.get("vector_store", {})
+            config = vector_store.get("config", {}) if isinstance(vector_store, dict) else {}
+            path_raw = config.get("path")
+            if not path_raw:
+                return False
+            old_path = Path(str(path_raw))
+            new_path = old_path.with_name(f"{old_path.name}_rebuilt")
+            new_path.mkdir(parents=True, exist_ok=True)
+            config["path"] = str(new_path)
+            self.logger.warning("已将 Chroma 路径切换到新目录: %s", new_path)
+            return True
+        except Exception as exc:
+            self.logger.warning("切换 Chroma 目录失败: %s", exc)
+            return False
+
+    def _ensure_store_dirs(self, mem0_config: Dict[str, Any]) -> None:
+        vector_store = mem0_config.get("vector_store", {})
+        vector_cfg = vector_store.get("config", {}) if isinstance(vector_store, dict) else {}
+        vector_path = vector_cfg.get("path")
+        if vector_path:
+            vector_cfg["path"] = str(self._normalize_dir_path(Path(str(vector_path))))
+        graph_store = mem0_config.get("graph_store", {})
+        graph_cfg = graph_store.get("config", {}) if isinstance(graph_store, dict) else {}
+        graph_db = graph_cfg.get("db")
+        if graph_db:
+            graph_cfg["db"] = str(self._normalize_dir_path(Path(str(graph_db))))
+
+    def _build_vector_only_config(self, mem0_config: Dict[str, Any]) -> Dict[str, Any]:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        vector_store = mem0_config.get("vector_store", {"provider": "chroma", "config": {"path": "./data/chroma_db_rebuilt"}})
+        if isinstance(vector_store, dict):
+            cfg = vector_store.get("config", {})
+            if isinstance(cfg, dict):
+                cfg["path"] = cfg.get("path", f"./data/chroma_db_rebuilt_{timestamp}")
+                cfg["path"] = str(Path(str(cfg["path"])).with_name(f"{Path(str(cfg['path'])).name}_{timestamp}"))
+        return {
+            "vector_store": vector_store,
+            "llm": mem0_config.get("llm", {}),
+            "embedder": mem0_config.get("embedder", {}),
+        }
+
+    def _normalize_dir_path(self, path: Path) -> Path:
+        if path.exists() and path.is_file():
+            backup = path.with_name(f"{path.name}_as_file_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            shutil.move(str(path), str(backup))
+            self.logger.warning("检测到目录路径被文件占用，已备份文件: %s", backup)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def _init_db(self) -> None:
         with self._lock:

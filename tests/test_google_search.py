@@ -11,8 +11,8 @@ def test_google_search_tool_init() -> None:
 
 
 def test_google_search_without_config_returns_hint(monkeypatch) -> None:
-    monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_SEARCH_API_KEY", raising=False)
+    monkeypatch.setenv("SERPAPI_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_SEARCH_API_KEY", "")
     tool = GoogleSearchTool()
     results = tool.search("artificial life", num_results=3)
     assert isinstance(results, list)
@@ -69,8 +69,8 @@ def test_google_search_news_and_papers(monkeypatch) -> None:
 
 
 def test_search_google_convenience_function(monkeypatch) -> None:
-    monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_SEARCH_API_KEY", raising=False)
+    monkeypatch.setenv("SERPAPI_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_SEARCH_API_KEY", "")
     results = search_google("digital life", num_results=2)
     assert isinstance(results, list)
     assert len(results) > 0
